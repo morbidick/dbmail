@@ -261,8 +261,13 @@ void ci_write_cb(ClientBase_T *client)
 	       result = ci_write(client,NULL);
 	       switch(result) {
 		       case 0:
-			       event_add(client->wev, NULL);
-			       break;
+					if (client->pending_ssl_event == 1) {
+						event_add(client->rev, &client->timeout);  // Wait for read
+					} else {
+						event_add(client->wev, &client->timeout);  // Wait for write
+					}
+					client->pending_ssl_event = 0;  // Reset
+					break;
 		       case 1:
 			       ci_uncork(client);
 			       break;
@@ -282,8 +287,6 @@ int ci_write(ClientBase_T *client, char * msg, ...)
 	char *s;
 	int state;
 	int ssl_ret;
-	int count = 0;
-	int count_tries = server_conf->timeout;
 
 	if (! (client && client->write_buffer))
 		return -1; // stale
@@ -328,13 +331,12 @@ int ci_write(ClientBase_T *client, char * msg, ...)
 				TRACE(TRACE_DEBUG, "ssl write error SSL_ERROR_ZERO_RETURN");
 			} else if (ssl_ret == SSL_ERROR_WANT_READ) {
 				TRACE(TRACE_DEBUG, "ssl write error SSL_ERROR_WANT_READ");
-				while (t < 0 && count++ < count_tries) {
-					t = (int64_t)SSL_write(client->sock->ssl, (gconstpointer)client->tls_wbuf, client->tls_wbuf_n);
-					TRACE(TRACE_DEBUG, "SSL Retry [%d/%d] t[%ld]", count, count_tries, t);
-					usleep(10000);
-				}
+				client->pending_ssl_event = 1;  // Wait for read
+				return 0;
 			} else if (ssl_ret == SSL_ERROR_WANT_WRITE) {
 				TRACE(TRACE_DEBUG, "ssl write error SSL_ERROR_WANT_WRITE");
+				client->pending_ssl_event = 2;  // Wait for write
+				return 0;
 			} else if (ssl_ret == SSL_ERROR_WANT_CONNECT) {
 				TRACE(TRACE_DEBUG, "ssl write error SSL_ERROR_WANT_CONNECT");
 			} else if (ssl_ret == SSL_ERROR_WANT_X509_LOOKUP) {

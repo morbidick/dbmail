@@ -345,6 +345,7 @@ typedef struct {
 	uint64_t write_buffer_offset;	/* output buffer offset */
 
 	uint64_t len;			/* crlf decoded octets read by last ci_read(ln) call */
+	int pending_ssl_event;		/* 0: none, 1: wait for read, 2: wait for write */
 } ClientBase_T;
 
 struct http_sock {
