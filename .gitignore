@@ -86,3 +86,5 @@ test/.deps/
 stamp-h1
 stamps/
 docker/dbmail.conf
+
+e2e/tmp
