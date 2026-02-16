@@ -1254,9 +1254,15 @@ gint dm_strcasecmpdata(gconstpointer a, gconstpointer b, gpointer data UNUSED)
 /* Read from instream until ".\r\n", discarding what is read. */
 int discard_client_input(ClientBase_T *ci)
 {
-	int c = 0, n = 0;
+	int n = 0;
+	char c;
+	struct evbuffer *input;
 
-	while ((read(ci->rx, (void *)&c, 1)) == 1) {
+	if (!ci->bev) return 0;
+	input = bufferevent_get_input(ci->bev);
+
+	while (evbuffer_get_length(input) > 0) {
+		evbuffer_remove(input, &c, 1);
 		if (c == '\r') {
 			if (n == 4) n = 5;	 /*  \r\n.\r    */
 			else n = 1; 		 /*  \r         */

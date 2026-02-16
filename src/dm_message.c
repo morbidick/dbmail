@@ -880,6 +880,11 @@ DbmailMessage * dbmail_message_init_with_string(DbmailMessage *self, const char 
 		g_free(fixdata);
 	}
 
+	if (!self->content) {
+		TRACE(TRACE_WARNING, "Message parse failed; no MIME content available");
+		return self;
+	}
+
 	buf = dbmail_message_to_string(self);
 	crlf = get_crlf_encoded(buf);
 	self->crlf = p_string_new(self->pool, crlf);
@@ -1055,7 +1060,10 @@ const char * dbmail_message_get_charset(DbmailMessage *self)
 /* dump message(parts) to char ptrs */
 gchar * dbmail_message_to_string(const DbmailMessage *self) 
 {
-	assert(self && self->content);
+	if (!self || !self->content) {
+		TRACE(TRACE_WARNING, "dbmail_message_to_string called without content");
+		return g_strdup("");
+	}
 	return g_mime_object_to_string(GMIME_OBJECT(self->content), NULL);
 }
 gchar * dbmail_message_body_to_string(const DbmailMessage *self)

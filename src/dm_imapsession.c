@@ -96,6 +96,7 @@ ImapSession * dbmail_imap_session_new(Mempool_T pool)
 	gboolean enable_cram_md5 = TRUE;
 
 	self = mempool_pop(pool, sizeof(ImapSession));
+	memset(self, 0, sizeof(ImapSession));
 
 	if (! queue_pool)
 		self->buff = p_string_new(pool, "");
@@ -259,8 +260,13 @@ static gboolean _physids_free(gpointer key, gpointer value, gpointer data)
 
 void dbmail_imap_session_delete(ImapSession ** s)
 {
-	ImapSession *self = *s;
+	ImapSession *self;
 	Mempool_T pool;
+
+	if (!s || !*s)
+		return;
+
+	self = *s;
 
 	TRACE(TRACE_DEBUG, "[%p]", self);
 	Capa_free(&self->preauth_capa);
@@ -295,6 +301,7 @@ void dbmail_imap_session_delete(ImapSession ** s)
 	pool = self->pool;
 	mempool_push(pool, self, sizeof(ImapSession));
 	mempool_close(&pool);
+	*s = NULL;
 	self = NULL;
 }
 
@@ -1819,12 +1826,12 @@ int dbmail_imap_session_set_state(ImapSession *self, ClientState_T state)
 	switch (state) {
 		case CLIENTSTATE_ERROR:
 			assert(self->ci);
-			if (self->ci->wev) event_del(self->ci->wev);
+			if (self->ci->bev) bufferevent_disable(self->ci->bev, EV_WRITE);
 			// fall-through...
 
 		case CLIENTSTATE_LOGOUT:
 			assert(self->ci);
-			if (self->ci->rev) event_del(self->ci->rev);
+			if (self->ci->bev) bufferevent_disable(self->ci->bev, EV_READ);
 			break;
 
 		case CLIENTSTATE_AUTHENTICATED:

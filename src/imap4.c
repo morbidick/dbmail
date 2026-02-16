@@ -136,6 +136,21 @@ static int imap4_tokenizer(ImapSession *, char *);
 static int imap4(ImapSession *);
 static void imap_handle_input(ImapSession *);
 static void imap_handle_abort(ImapSession *);
+void imap_cleanup_deferred(gpointer data);
+
+static void imap_queue_cleanup_once(ImapSession *session)
+{
+	int queued;
+
+	PLOCK(session->lock);
+	queued = session->cleanup_queued;
+	if (!queued)
+		session->cleanup_queued = TRUE;
+	PUNLOCK(session->lock);
+
+	if (!queued)
+		dm_queue_push(imap_cleanup_deferred, session, NULL);
+}
 
 #define DEFERRED_MAX_LOOP 100
 
@@ -148,7 +163,7 @@ void imap_cleanup_deferred(gpointer data)
 
 	ci->deferred++;
 
-	if (ci->rev) event_del(ci->rev);
+	if (ci->bev) bufferevent_disable(ci->bev, EV_READ);
 	if (ci_wbuf_len(ci) && (! (ci->client_state & CLIENT_ERR)) && (ci->deferred < DEFERRED_MAX_LOOP)) {
 		ci_write_cb(ci);
 		dm_queue_push(imap_cleanup_deferred, session, NULL);
@@ -175,30 +190,26 @@ static void imap_session_bailout(ImapSession *session)
 
 	if (! dbmail_imap_session_set_state(session, CLIENTSTATE_QUIT_QUEUED)) {
 		assert(session && session->ci);
-		dm_queue_push(imap_cleanup_deferred, session, NULL);
+
+		/*
+		 * If a command is still running in a worker thread, defer cleanup until
+		 * _ic_cb_leave runs; freeing now can race with callback completion.
+		 */
+		if (session->command_state == FALSE)
+			return;
+
+		imap_queue_cleanup_once(session);
 	}
 }
 
-#ifdef DEBUG
-void socket_write_cb(int fd, short what, void *arg)
-#else
-void socket_write_cb(int UNUSED fd, short UNUSED what, void *arg)
-#endif
+static void socket_write_cb(struct bufferevent *bev UNUSED, void *arg)
 {
 	ImapSession *session = (ImapSession *)arg;
 	ClientState_T state;
 	PLOCK(session->lock);
 	state = session->state;
 	PUNLOCK(session->lock);
-#ifdef DEBUG
-	TRACE(TRACE_DEBUG,"[%p] on [%d] state [%d] event:%s%s%s%s", session,
-			(int) fd, state,
-			(what&EV_TIMEOUT) ? " timeout": "",
-			(what&EV_READ)    ? " read":    "",
-			(what&EV_WRITE)   ? " write":   "",
-			(what&EV_SIGNAL)  ? " signal":  ""
-	     );
-#endif
+
 	switch(state) {
 		case CLIENTSTATE_QUIT_QUEUED:
 			break; // ignore
@@ -221,7 +232,8 @@ void imap_cb_read(void *arg)
 
 	ci_read_cb(session->ci);
 
-	uint64_t have = p_string_len(session->ci->read_buffer);
+	struct evbuffer *input = bufferevent_get_input(session->ci->bev);
+	uint64_t have = evbuffer_get_length(input);
 	uint64_t need = session->ci->rbuff_size;
 	int enough = (need>0?(have >= need):(have > 0));
 	int state;
@@ -244,27 +256,51 @@ void imap_cb_read(void *arg)
 		imap_handle_input(session);
 }
 
-#ifdef DEBUG
-void socket_read_cb(int fd, short what, void *arg)
-#else
-void socket_read_cb(int UNUSED fd, short what, void *arg)
-#endif
+static void socket_read_cb(struct bufferevent *bev UNUSED, void *arg)
 {
 	ImapSession *session = (ImapSession *)arg;
-#ifdef DEBUG
-	TRACE(TRACE_DEBUG,"[%p] on [%d] event: %s%s%s%s", session,
-			(int) fd,
-			(what&EV_TIMEOUT) ? " timeout": "",
-			(what&EV_READ)    ? " read":    "",
-			(what&EV_WRITE)   ? " write":   "",
-			(what&EV_SIGNAL)  ? " signal":  ""
-			);
-#endif
-	if (what == EV_READ)
-		imap_cb_read(session);
-	else if (what == EV_TIMEOUT && session->ci->cb_time)
-		session->ci->cb_time(session);
-	
+	imap_cb_read(session);
+	dm_queue_drain();
+}
+
+static void socket_event_cb(struct bufferevent *bev, short what, void *arg)
+{
+	ImapSession *session = (ImapSession *)arg;
+	ClientBase_T *ci = session->ci;
+
+	if (what & BEV_EVENT_CONNECTED) {
+		/* TLS handshake completed — send greeting for implicit TLS */
+		TRACE(TRACE_DEBUG, "[%p] TLS handshake completed", session);
+		ci->sock->ssl_state = TRUE;
+		return;
+	}
+
+	if (what & BEV_EVENT_TIMEOUT) {
+		if (ci->cb_time)
+			ci->cb_time(session);
+		return;
+	}
+
+	if (what & BEV_EVENT_EOF) {
+		PLOCK(ci->lock);
+		ci->client_state |= CLIENT_EOF;
+		PUNLOCK(ci->lock);
+	}
+
+	if (what & BEV_EVENT_ERROR) {
+		unsigned long sslerr;
+		while ((sslerr = bufferevent_get_openssl_error(bev)))
+			TRACE(TRACE_INFO, "[%p] SSL error: %s", session,
+			      ERR_error_string(sslerr, NULL));
+		PLOCK(ci->lock);
+		ci->client_state |= CLIENT_ERR;
+		PUNLOCK(ci->lock);
+	}
+
+	if (what & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+		imap_session_bailout(session);
+	}
+
 	dm_queue_drain();
 }
 
@@ -423,7 +459,7 @@ static void imap_handle_continue(ImapSession *session)
 			}
 			dbmail_imap_session_buff_clear(session);
 		}
-		if (p_string_len(session->ci->write_buffer) > session->ci->write_buffer_offset)
+		if (ci_wbuf_len(session->ci) > 0)
 			ci_write(session->ci, NULL);
 		if (session->command_state == TRUE)
 			imap_session_reset(session);
@@ -432,7 +468,7 @@ static void imap_handle_continue(ImapSession *session)
 	}				
 
 	// handle buffered pending input
-	if (p_string_len(session->ci->read_buffer) > 0)
+	if (session->ci->bev && evbuffer_get_length(bufferevent_get_input(session->ci->bev)) > 0)
 		imap_handle_input(session);
 }
 
@@ -498,16 +534,16 @@ void imap_handle_input(ImapSession *session)
 	uint64_t alloc_size = 0;
 	int l, result;
 
-	assert(session && session->ci && session->ci->write_buffer);
+	assert(session && session->ci && session->ci->bev);
 
 	// first flush the output buffer
-	if (p_string_len(session->ci->write_buffer)) {
+	if (ci_wbuf_len(session->ci)) {
 		TRACE(TRACE_DEBUG,"[%p] write buffer not empty", session);
 		ci_write(session->ci, NULL);
 	}
 
 	// nothing left to handle
-	if (p_string_len(session->ci->read_buffer) == 0) {
+	if (evbuffer_get_length(bufferevent_get_input(session->ci->bev)) == 0) {
 		TRACE(TRACE_DEBUG,"[%p] read buffer empty", session);
 		return;
 	}
@@ -600,8 +636,6 @@ static void reset_callbacks(ImapSession *session)
 	session->ci->cb_time = imap_cb_time;
 	session->ci->timeout.tv_sec = server_conf->login_timeout;
 
-	UNBLOCK(session->ci->rx);
-	UNBLOCK(session->ci->tx);
 	ci_uncork(session->ci);
 }
 
@@ -619,8 +653,9 @@ int imap_handle_connection(client_sock *c)
 	TRACE(TRACE_NOTICE, "[%p] session established for [%s:%s]", session, ci->src_ip, ci->src_port);
 
 	assert(evbase);
-	ci->rev = event_new(evbase, ci->rx, EV_READ|EV_PERSIST, socket_read_cb, (void *)session);
-	ci->wev = event_new(evbase, ci->tx, EV_WRITE, socket_write_cb, (void *)session);
+	/* Set bufferevent callbacks for IMAP */
+	bufferevent_setcb(ci->bev, socket_read_cb, socket_write_cb,
+			  socket_event_cb, (void *)session);
 	ci_cork(ci);
 
 	session->ci = ci;
@@ -714,8 +749,18 @@ int imap4_tokenizer (ImapSession *session, char *buffer)
 void _ic_cb_leave(gpointer data)
 {
 	int state;
+	ClientState_T sstate;
 	dm_thread_data *D = (dm_thread_data *)data;
 	ImapSession *session = D->session;
+
+	PLOCK(session->lock);
+	sstate = session->state;
+	PUNLOCK(session->lock);
+
+	if (sstate == CLIENTSTATE_QUIT_QUEUED) {
+		imap_queue_cleanup_once(session);
+		return;
+	}
 
 	PLOCK(session->ci->lock);
 	state = session->ci->client_state;

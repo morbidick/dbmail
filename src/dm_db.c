@@ -331,14 +331,12 @@ Connection_T db_con_get(void)
 {
 	int i=0, k=0; Connection_T c = NULL;
 	while (! c) {
-		TRY
-			c = ConnectionPool_getConnectionOrException(pool);
-		CATCH(SQLException)
-			LOG_SQLERROR;
+		c = ConnectionPool_getConnection(pool);
+		if (!c) {
 			int pool_size = ConnectionPool_size(pool);
 			int pool_active = ConnectionPool_active(pool);
 			TRACE(TRACE_WARNING, "Connection pool: size [%i] active [%i].", pool_size, pool_active);
-		END_TRY;
+		}
 		if (c) break;
 		if((int)(i % 5)==0) {
 			TRACE(TRACE_ALERT, "Thread is having trouble obtaining a database connection. Try [%d]", i);
@@ -4756,6 +4754,11 @@ int db_append_msg(const char *msgdata, uint64_t mailbox_idnr, uint64_t user_idnr
 
 	message = dbmail_message_new(NULL);
 	message = dbmail_message_init_with_string(message, msgdata);
+	if (!message->content) {
+		TRACE(TRACE_WARNING, "append rejected: invalid message content");
+		dbmail_message_free(message);
+		return TRUE;
+	}
 	dbmail_message_set_internal_date(message, internal_date);
 
 	if (dbmail_message_store(message) < 0) {

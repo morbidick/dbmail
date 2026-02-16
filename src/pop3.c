@@ -234,10 +234,8 @@ static void pop3_handle_input(void *arg)
 	char buffer[MAX_LINESIZE];	/* connection buffer */
 	ClientSession_T *session = (ClientSession_T *)arg;
 
-	if (p_string_len(session->ci->write_buffer)) {
-		ci_write(session->ci, NULL);
+	if (evbuffer_get_length(bufferevent_get_output(session->ci->bev)) > 0)
 		return;
-	}
 
 	memset(buffer, 0, sizeof(buffer));
 	if (ci_readln(session->ci, buffer) == 0)
@@ -280,8 +278,6 @@ static void reset_callbacks(ClientSession_T *session)
         session->ci->cb_write = pop3_cb_write;
 	session->handle_input = pop3_handle_input;
 
-        UNBLOCK(session->ci->rx);
-        UNBLOCK(session->ci->tx);
 	ci_uncork(session->ci);
 }
 
@@ -465,6 +461,7 @@ int pop3(ClientSession_T *session, const char *buffer)
 			return pop3_error(session, "-ERR TLS already active\r\n");
 		ci_write(session->ci, "+OK Begin TLS now\r\n");
 		if (ci_starttls(session->ci) < 0) return -1;
+		/* handshake proceeds asynchronously via bufferevent */
 		return 1;
 
 	case POP3_USER:

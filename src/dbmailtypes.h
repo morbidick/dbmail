@@ -283,7 +283,6 @@ enum BODY_FETCH_ITEM_TYPES {
 typedef struct  {
 	Mempool_T pool;
 	int sock;
-	SSL *ssl;                       /* SSL/TLS context for this client */
 	gboolean ssl_state;		/* SSL_accept done or not */
 	struct sockaddr caddr;
 	socklen_t caddr_len;
@@ -294,7 +293,6 @@ typedef struct  {
 
 //
 
-#define TLS_SEGMENT	262144
 #define CLIENT_OK	0
 #define CLIENT_AGAIN	1
 #define CLIENT_ERR	2
@@ -303,7 +301,7 @@ typedef struct  {
 typedef struct {
 	Mempool_T pool;
 	client_sock *sock;
-	int rx, tx;                     /* read and write filehandles */
+	int rx, tx;                     /* read and write filehandles (metadata only, I/O via bev) */
 	uint64_t bytes_rx;		/* read byte counter */
 	uint64_t bytes_tx;		/* write byte counter */
 
@@ -314,7 +312,7 @@ typedef struct {
 	struct event *pev;		/* self-pipe event */
 	void (*cb_pipe) (void *);	/* callback for self-pipe events */
 
-	struct event *rev, *wev;  	/* read event, write event */
+	struct bufferevent *bev;	/* bufferevent (owns fd, SSL, and I/O buffers) */
 	void (*cb_time) (void *);
 	void (*cb_write) (void *);
 	int (*cb_error) (int fd, int error, void *);
@@ -334,15 +332,7 @@ typedef struct {
 
 	int service_before_smtp;
 
-	char tls_wbuf[TLS_SEGMENT];	/* buffer to write during tls session */
-	uint64_t tls_wbuf_n;		/* number of octets to write during tls session */
-
 	uint64_t rbuff_size;              /* size of string-literals */
-	String_T read_buffer;		/* input buffer */
-	uint64_t read_buffer_offset;	/* input buffer offset */
-
-	String_T write_buffer;		/* output buffer */
-	uint64_t write_buffer_offset;	/* output buffer offset */
 
 	uint64_t len;			/* crlf decoded octets read by last ci_read(ln) call */
 } ClientBase_T;

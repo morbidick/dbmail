@@ -58,6 +58,7 @@ typedef struct {
 	struct cmd_t *cmd; // command structure (wip)
 	gboolean error; // command result
 	int error_count;
+	gboolean cleanup_queued;
 	ClientState_T state; // session status 
 	ImapEnabled_T enabled; // qresync/condstore enabled
 	Connection_T c; // database-connection;
