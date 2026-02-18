@@ -31,6 +31,10 @@
 extern ServerConfig_T *server_conf;
 extern struct event_base *evbase;
 
+static void socket_read_cb(struct bufferevent *bev, void *arg);
+static void socket_write_cb(struct bufferevent *bev, void *arg);
+static void socket_event_cb(struct bufferevent *bev, short what, void *arg);
+
 ClientSession_T * client_session_new(client_sock *c)
 {
 	ClientBase_T *ci;
@@ -56,8 +60,9 @@ ClientSession_T * client_session_new(client_sock *c)
 	session->apop_stamp = g_strdup_printf("<%s@%s>", unique_id, session->hostname);
 
 	assert(evbase);
-        ci->rev = event_new(evbase, ci->rx, EV_READ|EV_PERSIST, socket_read_cb, (void *)session);
-        ci->wev = event_new(evbase, ci->tx, EV_WRITE, socket_write_cb, (void *)session);
+	/* Set bufferevent callbacks for POP3/LMTP/Sieve */
+	bufferevent_setcb(ci->bev, socket_read_cb, socket_write_cb,
+			  socket_event_cb, (void *)session);
 	ci_cork(ci);
 
 	session->ci = ci;
@@ -235,7 +240,8 @@ void client_session_read(void *arg)
 	ClientSession_T *session = (ClientSession_T *)arg;
 	ci_read_cb(session->ci);
 
-	uint64_t have = p_string_len(session->ci->read_buffer);
+	struct evbuffer *input = bufferevent_get_input(session->ci->bev);
+	uint64_t have = evbuffer_get_length(input);
 	uint64_t need = session->ci->rbuff_size;
 
 	int enough = (need>0?(have >= need):(have > 0));
@@ -264,26 +270,56 @@ void client_session_set_timeout(ClientSession_T *session, int timeout)
 	}
 }
 
-void socket_read_cb(int fd UNUSED, short what, void *arg)
+static void socket_read_cb(struct bufferevent *bev UNUSED, void *arg)
 {
 	ClientSession_T *session = (ClientSession_T *)arg;
-	if (what == EV_READ)
-		client_session_read(session); // drain the read-event handle
-	else if (what == EV_TIMEOUT && session->ci->cb_time)
-		session->ci->cb_time(session);
+	client_session_read(session);
 }
 
-void socket_write_cb(int fd UNUSED, short what, void *arg)
+static void socket_event_cb(struct bufferevent *bev, short what, void *arg)
+{
+	ClientSession_T *session = (ClientSession_T *)arg;
+	ClientBase_T *ci = session->ci;
+
+	if (what & BEV_EVENT_CONNECTED) {
+		TRACE(TRACE_DEBUG, "[%p] TLS handshake completed", session);
+		ci->sock->ssl_state = TRUE;
+		return;
+	}
+
+	if (what & BEV_EVENT_TIMEOUT) {
+		if (ci->cb_time)
+			ci->cb_time(session);
+		return;
+	}
+
+	if (what & BEV_EVENT_EOF) {
+		PLOCK(ci->lock);
+		ci->client_state |= CLIENT_EOF;
+		PUNLOCK(ci->lock);
+	}
+
+	if (what & BEV_EVENT_ERROR) {
+		unsigned long sslerr;
+		while ((sslerr = bufferevent_get_openssl_error(bev)))
+			TRACE(TRACE_INFO, "[%p] SSL error: %s", session,
+			      (char *)ERR_error_string(sslerr, NULL));
+		PLOCK(ci->lock);
+		ci->client_state |= CLIENT_ERR;
+		PUNLOCK(ci->lock);
+	}
+
+	if (what & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+		client_session_bailout(&session);
+	}
+}
+
+static void socket_write_cb(struct bufferevent *bev UNUSED, void *arg)
 {
 	ClientSession_T *session = (ClientSession_T *)arg;
 
 	if (! session->ci->cb_write)
 		return;
-
-	if (what == EV_TIMEOUT && session->ci->cb_time) {
-		session->ci->cb_time(session);
-		return;
-	}
 
 	session->ci->cb_write(session);
 

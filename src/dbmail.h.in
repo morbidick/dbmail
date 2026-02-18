@@ -115,9 +115,13 @@
 
 #include <event2/event.h>
 #include <event2/thread.h>
+#include <event2/bufferevent.h>
+#include <event2/bufferevent_ssl.h>
+#include <event2/buffer.h>
 #include <evhttp.h>
 #include <math.h>
 #include <openssl/ssl.h>
+#include <openssl/err.h>
 
 #ifdef AUTHLDAP
 #define LDAP_DEPRECATED 1

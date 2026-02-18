@@ -1,0 +1,11 @@
+From test@example.com Wed Feb 18 12:00:00 2026
+From: test@example.com
+To: test@example.com
+Subject: DBMail IMAPTEST fixture
+Date: Wed, 18 Feb 2026 12:00:00 +0000
+Message-ID: <imaptest-fixture-1@dbmail.local>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Hello from the DBMail imaptest fixture.
+This message is used by dovecot/imaptest APPEND tests.

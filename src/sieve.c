@@ -139,10 +139,8 @@ void sieve_cb_write(void *arg)
 		case CLIENTSTATE_QUIT:
 			break;
 		default:
-			if (p_string_len(session->ci->write_buffer) > session->ci->write_buffer_offset) {
-				ci_write(session->ci,NULL);
+			if (evbuffer_get_length(bufferevent_get_output(session->ci->bev)) > 0)
 				break;
-			}
 			session->handle_input(session);
 			break;
 	}
@@ -153,9 +151,6 @@ static void reset_callbacks(ClientSession_T *session)
 	session->ci->cb_time = sieve_cb_time;
 	session->ci->cb_write = sieve_cb_write;
 	session->handle_input = sieve_handle_input;
-
-	UNBLOCK(session->ci->rx);
-	UNBLOCK(session->ci->tx);
 
 	ci_uncork(session->ci);
 }
@@ -353,6 +348,7 @@ int sieve(ClientSession_T *session)
 
 		send_greeting(session);
 
+		/* handshake proceeds asynchronously via bufferevent */
 		if (iret == 0) return 3; /* done */
 
 		return iret;

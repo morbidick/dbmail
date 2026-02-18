@@ -5585,7 +5585,7 @@ do :
 if test "x$ac_cv_header_event_h" = xyes
 then :
   printf "%s\n" "#define HAVE_EVENT_H 1" >>confdefs.h
- EVENTLIB="-levent_pthreads -levent"
+ EVENTLIB="-levent_openssl -levent_pthreads -levent"
 else case e in #(
   e) EVENTLIB="failed" ;;
 esac

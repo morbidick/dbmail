@@ -185,6 +185,8 @@ int _ic_starttls(ImapSession *self)
 	if (i < 0) i = 0;
 
 	if (i == 0) {
+		/* Handshake proceeds asynchronously via bufferevent;
+		 * BEV_EVENT_CONNECTED will set ssl_state = TRUE */
 		dbmail_imap_session_encrypted(self);
 		return 3; /* done */
 	}

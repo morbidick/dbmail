@@ -108,6 +108,18 @@ char *tls_get_error(void)
 	return ERR_error_string(ERR_get_error(), NULL);
 }
 
+SSL *tls_setup_new(void)
+{
+	SSL *ssl;
+
+	if (! (ssl = SSL_new(tls_context))) {
+		TRACE(TRACE_ERR, "Error creating TLS connection: %s", tls_get_error());
+		return NULL;
+	}
+
+	return ssl;
+}
+
 SSL *tls_setup(int fd)
 {
 	SSL *ssl;

@@ -134,10 +134,8 @@ void lmtp_cb_write(void *arg)
 		case CLIENTSTATE_QUIT:
 			break;
 		default:
-			if (p_string_len(session->ci->write_buffer) > session->ci->write_buffer_offset) {
-				ci_write(session->ci,NULL);
+			if (evbuffer_get_length(bufferevent_get_output(session->ci->bev)) > 0)
 				break;
-			}
 			lmtp_handle_input(session);
 			break;
 	}
@@ -148,9 +146,6 @@ static void reset_callbacks(ClientSession_T *session)
         session->ci->cb_time = lmtp_cb_time;
         session->ci->cb_write = lmtp_cb_write;
 	session->handle_input = lmtp_handle_input;
-
-        UNBLOCK(session->ci->rx);
-        UNBLOCK(session->ci->tx);
 
 	ci_uncork(session->ci);
 }

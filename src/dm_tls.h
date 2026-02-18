@@ -26,6 +26,7 @@
 
 SSL_CTX *tls_init(void);
 SSL *tls_setup(int);
+SSL *tls_setup_new(void);
 void tls_load_certs(ServerConfig_T *);
 void tls_load_ciphers(ServerConfig_T *);
 char *tls_get_error(void);
